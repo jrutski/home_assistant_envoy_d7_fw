@@ -10,10 +10,9 @@ import httpx
 from numpy import isin
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_USERNAME, CONF_FILE_PATH
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import COORDINATOR, DOMAIN, NAME, PLATFORMS, SENSORS, CONF_USE_ENLIGHTEN, CONF_SERIAL
@@ -35,8 +34,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         password=config[CONF_PASSWORD],
         enlighten_user=config[CONF_USERNAME],
         enlighten_pass=config[CONF_PASSWORD],
+        token_cache_file=config[CONF_FILE_PATH],
         inverters=True,
-#        async_client=get_async_client(hass),
         use_enlighten_owner_token=config.get(CONF_USE_ENLIGHTEN, False),
         enlighten_serial_num=config[CONF_SERIAL],
         https_flag='s' if config.get(CONF_USE_ENLIGHTEN, False) else ''
@@ -61,7 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 elif description.key == "batteries":
                     battery_data = await envoy_reader.battery_storage()
-                    if isinstance(battery_data, list):
+                    if isinstance(battery_data, list) and len(battery_data) > 0:
                         battery_dict = {}
                         for item in battery_data:
                             battery_dict[item["serial_num"]] = item
@@ -97,6 +96,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         envoy_reader, description.key
                     )()
 
+            data["grid_status"] = await envoy_reader.grid_status()
+
             _LOGGER.debug("Retrieved data from API: %s", data)
 
             return data
@@ -128,7 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         NAME: name,
     }
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 

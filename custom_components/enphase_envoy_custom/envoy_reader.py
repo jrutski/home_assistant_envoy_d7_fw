@@ -7,6 +7,7 @@ import jwt
 import re
 import time
 import json
+import os.path
 from json.decoder import JSONDecodeError
 
 import httpx
@@ -40,7 +41,7 @@ ENVOY_MODEL_S = "PC"
 ENVOY_MODEL_C = "P"
 ENVOY_MODEL_LEGACY = "P0"
 
-LOGIN_URL = "https://entrez.enphaseenergy.com/login"
+LOGIN_URL = "https://entrez.enphaseenergy.com/login_main_page"
 TOKEN_URL = "https://entrez.enphaseenergy.com/entrez_tokens"
 
 # paths for the enlighten 6 month owner token
@@ -81,6 +82,10 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
         "Consumption data not available for your Envoy device."
     )
 
+    message_grid_status_not_available = (
+        "Grid status not available for your Envoy device."
+    )
+
     def __init__(  # pylint: disable=too-many-arguments
         self,
         host,
@@ -90,6 +95,7 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
         async_client=None,
         enlighten_user=None,
         enlighten_pass=None,
+        token_cache_file=None,
         commissioned=False,
         enlighten_site_id=None,
         enlighten_serial_num=None,
@@ -116,6 +122,7 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
         self._cookies = None
         self.enlighten_user = enlighten_user
         self.enlighten_pass = enlighten_pass
+        self.token_cache_file = token_cache_file
         self.commissioned = commissioned
         self.enlighten_site_id = enlighten_site_id
         self.enlighten_serial_num = enlighten_serial_num
@@ -149,6 +156,9 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
         )
         await self._update_endpoint(
             "endpoint_ensemble_json_results", ENDPOINT_URL_ENSEMBLE_INVENTORY
+        )
+        await self._update_endpoint(
+            "endpoint_home_json_results", ENDPOINT_URL_HOME_JSON
         )
 
     async def _update_from_p_endpoint(self):
@@ -203,7 +213,6 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
 
     async def _async_post(self, url, data, cookies=None, **kwargs):
         _LOGGER.debug("HTTP POST Attempt: %s", url)
-        # _LOGGER.debug("HTTP POST Data: %s", data)
         try:
             async with self.async_client as client:
                 resp = await client.post(
@@ -223,20 +232,12 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
         async with self.async_client as client:
             # login to the enlighten UI
 
-            #resp = await client.get(ENLIGHTEN_AUTH_FORM_URL)
-            #soup = BeautifulSoup(resp.text, features="html.parser")
-            # grab the single use auth token for this form
-            #authenticity_token = soup.find('input', {'name': 'authenticity_token'})["value"]
-            # and the form action itself
-            #form_action = soup.find('input', {'name': 'authenticity_token'}).parent["action"]
-
             # Get an enlighten user session
             payload_login = {'user[email]': self.enlighten_user,'user[password]': self.enlighten_pass}
 
             resp = await client.post(ENLIGHTEN_AUTH_JSON_URL, data=payload_login)
             if resp.status_code >= 400:
                 raise Exception("Could not Authenticate via Enlighten auth form")
-
             response_data = json.loads(resp.text)
             login_data = {'session_id': response_data['session_id'], 'serial_num': self.enlighten_serial_num, 'username': self.enlighten_user}
             # now that we're in a logged in session, we can request the 6 month owner token via enlighten
@@ -246,6 +247,9 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
             if resp.status_code != 200:
                 #msg = resp_json.get("message", "Unknown error returned from enlighten: " + resp.text)
                 raise Exception("Could not get 6 month token: " + resp.text)
+            _LOGGER.debug("Storing the token for emergencies")
+            self.store_token(owner_token)
+            _LOGGER.debug("Token stored successfully")
             return owner_token
 
     async def _getEnphaseToken(  # pylint: disable=invalid-name
@@ -257,11 +261,13 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
         }
 
         if self.use_enlighten_owner_token:
-            self._token = await self._fetch_owner_token_json()
-
-            #self._token = token_json["token"]
-            #time_left_days = (token_json["expires_at"] - time.time())/(24*3600)
-            #_LOGGER.debug("Commissioned Token valid for %s days", time_left_days)
+            try: 
+                self._token = await self._fetch_owner_token_json()
+                _LOGGER.debug("Retrieved the 6 month token successfully")
+            except Exception as e:
+                _LOGGER.error(str(e))
+                _LOGGER.error("Unable to retrieve token from Enphase, falling back to local cache")
+                self._token = self.get_stored_token()
 
         elif self.commissioned == "True" or self.commissioned == "Commissioned":
             # Login to website and store cookie
@@ -273,12 +279,15 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
             response = await self._async_post(
                 TOKEN_URL, data=payload_token, cookies=resp.cookies
             )
-
-            parsed_html = BeautifulSoup(response.text, features="html.parser")
-            self._token = parsed_html.body.find(  # pylint: disable=invalid-name, unused-variable, redefined-outer-name
-                "textarea"
-            ).text
-            _LOGGER.debug("Commissioned Token: %s", self._token)
+            if response.status_code != 200:
+                _LOGGER.error("Unable to retrieve token from: %s", LOGIN_URL)
+                _LOGGER.error("Falling back to cached token")
+                self._token = self.get_stored_token()
+            else:
+                parsed_html = BeautifulSoup(response.text, features="html.parser")
+                self._token = parsed_html.body.find("textarea").text
+                self.store_token(self._token)
+                _LOGGER.debug("Commissioned Token2")
 
         else:
             # Login to website and store cookie
@@ -291,7 +300,7 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
             self._token = soup.find("textarea").contents[
                 0
             ]  # pylint: disable=invalid-name
-            _LOGGER.debug("Uncommissioned Token: %s", self._token)
+            _LOGGER.debug("Uncommissioned Token")
 
         await self._refresh_token_cookies()
 
@@ -360,13 +369,13 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
 
         # Check if the Secure flag is set
         if self.https_flag == "s":
-            _LOGGER.debug("Checking Token value: %s", self._token)
+            _LOGGER.debug("Checking Token value")
             # Check if a token has already been retrieved
             if self._token == "":
-                _LOGGER.debug("Found empty token: %s", self._token)
+                _LOGGER.debug("Found empty token")
                 await self._getEnphaseToken()
             else:
-                _LOGGER.debug("Token is populated: %s", self._token)
+                _LOGGER.debug("Token is populated")
                 if self._is_enphase_token_expired(self._token):
                     _LOGGER.debug("Found Expired token - Retrieving new token")
                     await self._getEnphaseToken()
@@ -490,6 +499,24 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
         match = SERIAL_REGEX.search(response.text)
         if match:
             return match.group(1)
+
+    def get_stored_token(self):
+        """Return stored data."""
+        if not os.path.exists(self.token_cache_file):
+            return {}
+        with open(self.token_cache_file, 'r') as openfile:
+            # Reading from json file
+            json_object = json.load(openfile)
+        
+        return json_object["auth_token"]
+
+    def store_token(self, token):
+        """Store uri timestamp to file."""
+        token_json = {
+            "auth_token": token
+        }
+        with open(self.token_cache_file, "w") as outfile:
+            json.dump(token_json, outfile)
 
     def create_connect_errormessage(self):
         """Create error message if unable to connect to Envoy"""
@@ -731,6 +758,15 @@ class EnvoyReader:  # pylint: disable=too-many-instance-attributes
             return self.message_battery_not_available
 
         return raw_json["storage"][0]
+
+    async def grid_status(self):
+        """Return grid status reported by Envoy"""
+        if self.endpoint_home_json_results is not None:
+            home_json = self.endpoint_home_json_results.json()
+            if "enpower" in home_json.keys() and "grid_status" in home_json["enpower"].keys():
+                return home_json["enpower"]["grid_status"]
+
+        return self.message_grid_status_not_available
 
     def run_in_console(self):
         """If running this module directly, print all the values in the console."""

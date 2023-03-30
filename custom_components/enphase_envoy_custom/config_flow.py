@@ -12,7 +12,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.components import zeroconf
-from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_USERNAME, CONF_FILE_PATH
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
@@ -20,8 +20,6 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN, CONF_SERIAL, CONF_USE_ENLIGHTEN
 
 _LOGGER = logging.getLogger(__name__)
-logging.getLogger("envoy_reader.envoy_reader").setLevel(logging.DEBUG)
-logging.getLogger("custom_components.enphase_envoy").setLevel(logging.DEBUG)
 
 ENVOY = "Envoy"
 
@@ -34,6 +32,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> EnvoyRead
         password=data[CONF_PASSWORD],
         enlighten_user=data[CONF_USERNAME],
         enlighten_pass=data[CONF_PASSWORD],
+        token_cache_file=data[CONF_FILE_PATH],
         inverters=False,
 #        async_client=get_async_client(hass),
         use_enlighten_owner_token=data.get(CONF_USE_ENLIGHTEN, False),
@@ -87,6 +86,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema[vol.Optional(CONF_PASSWORD, default="")] = str
         schema[vol.Optional(CONF_SERIAL, default=self.unique_id)] = str
         schema[vol.Optional(CONF_USE_ENLIGHTEN)] = bool
+        schema[vol.Optional(CONF_FILE_PATH, default="/config/custom_components/enphase_envoy/token_cache.json")] = str
         return vol.Schema(schema)
 
     @callback

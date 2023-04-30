@@ -61,7 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 elif description.key == "batteries":
                     battery_data = await envoy_reader.battery_storage()
-                    if isinstance(battery_data, list):
+                    if isinstance(battery_data, list) and len(battery_data) > 0:
                         battery_dict = {}
                         for item in battery_data:
                             battery_dict[item["serial_num"]] = item
@@ -70,7 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 elif description.key == "total_battery_percentage":
                     battery_data = await envoy_reader.battery_storage()
-                    if isinstance(battery_data, list):
+                    if isinstance(battery_data, list) and len(battery_data) > 0:
                         battery_sum = 0
                         for battery in battery_data:
                             if (battery.get("led_status") != 0):
@@ -80,7 +80,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 elif description.key == "current_battery_capacity":
                     battery_data = await envoy_reader.battery_storage()
-                    if isinstance(battery_data, list):
+                    if isinstance(battery_data, list) and len(battery_data) > 0:
                         battery_sum = 0
                         for battery in battery_data:
                             battery_capacity = battery.get("encharge_capacity", 0)
